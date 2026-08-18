@@ -1,0 +1,462 @@
+<!--
+  Wordly Float Captions — v1.0
+  Single-file floating caption window. Connects directly to Wordly WSS /attend,
+  renders live translated captions in a draggable/resizable box.
+  Launch: chrome --app="file:///path/to/index.html"
+  No apikey used or needed — /attend auth is sessionID (+ passcode if restricted) only.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wordly Float Captions</title>
+<style>
+:root{
+  --panel-bg:#14171c;
+  --panel-border:#262b35;
+  --panel-text:#e7eaf0;
+  --panel-muted:#8892a4;
+  --accent:#4f8fff;
+  --accent-2:#00d9b5;
+  --canvas-bg:#f4f5f7;
+  --canvas-dot:#dde1e8;
+  --danger:#ff5470;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%;overflow:hidden;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:#fff}
+
+/* ── CONTROL BAR ── */
+.control-bar{
+  position:absolute;top:0;left:0;right:0;z-index:20;
+  display:flex;flex-wrap:wrap;align-items:flex-end;gap:14px;
+  background:var(--panel-bg);border-bottom:1px solid var(--panel-border);
+  color:var(--panel-text);padding:10px 16px;
+}
+.present-mode .control-bar{display:none}
+.field{display:flex;flex-direction:column;gap:3px}
+.field label{font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:var(--panel-muted)}
+.field input[type=text],.field select{
+  background:#1c2028;border:1px solid var(--panel-border);color:var(--panel-text);
+  border-radius:5px;padding:5px 8px;font-size:12px;min-width:90px
+}
+.field input[type=text].invalid{border-color:var(--danger)}
+.field input[type=color]{width:34px;height:28px;border:1px solid var(--panel-border);border-radius:5px;background:none;padding:1px;cursor:pointer}
+.field input[type=number]{width:56px;background:#1c2028;border:1px solid var(--panel-border);color:var(--panel-text);border-radius:5px;padding:5px 6px;font-size:12px}
+.field input[type=range]{width:110px}
+.field .val{font-size:10px;color:var(--accent-2);font-variant-numeric:tabular-nums}
+.app-label{font-size:13px;font-weight:600;color:var(--accent-2);align-self:center;margin-right:4px;white-space:nowrap}
+.spacer{flex:1}
+#presentBtn{
+  align-self:center;background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  color:#fff;border:none;border-radius:6px;padding:9px 18px;font-size:13px;font-weight:600;
+  cursor:pointer;white-space:nowrap
+}
+#presentBtn:disabled{opacity:.35;cursor:not-allowed}
+#presentBtn:not(:disabled):hover{opacity:.9}
+
+/* ── CANVAS ── */
+.canvas{position:absolute;inset:0;top:64px}
+body:not(.present-mode) .canvas{
+  background-color:var(--canvas-bg);
+  background-image:radial-gradient(var(--canvas-dot) 1px, transparent 1px);
+  background-size:20px 20px;
+}
+.present-mode .canvas{top:0;background:#fff}
+
+/* ── CAPTION BOX ── */
+.box{
+  position:absolute;display:flex;align-items:center;justify-content:center;
+  text-align:center;border-radius:6px;overflow:hidden;cursor:move;
+  user-select:none;padding:14px;
+}
+body:not(.present-mode) .box{outline:2px dashed var(--accent-2);outline-offset:3px}
+.present-mode .box{cursor:default}
+.box-text{width:100%;line-height:1.35;overflow-wrap:break-word}
+.box-text.error{color:#ff8fa3 !important}
+
+/* resize handles */
+.handle{position:absolute;width:10px;height:10px;background:var(--accent-2);border:1px solid #fff;border-radius:2px;z-index:5}
+.present-mode .handle{display:none}
+.handle.tl{top:-5px;left:-5px;cursor:nwse-resize}
+.handle.tr{top:-5px;right:-5px;cursor:nesw-resize}
+.handle.bl{bottom:-5px;left:-5px;cursor:nesw-resize}
+.handle.br{bottom:-5px;right:-5px;cursor:nwse-resize}
+.handle.tm{top:-5px;left:calc(50% - 5px);cursor:ns-resize}
+.handle.bm{bottom:-5px;left:calc(50% - 5px);cursor:ns-resize}
+.handle.ml{left:-5px;top:calc(50% - 5px);cursor:ew-resize}
+.handle.mr{right:-5px;top:calc(50% - 5px);cursor:ew-resize}
+
+/* return-to-edit tab, present mode only, fades in on box hover */
+.edit-tab{
+  position:absolute;top:6px;left:6px;width:26px;height:26px;border-radius:6px;
+  background:rgba(20,23,28,.85);color:#fff;display:none;align-items:center;justify-content:center;
+  font-size:14px;cursor:pointer;opacity:0;transition:opacity .15s;z-index:10
+}
+.present-mode .edit-tab{display:flex}
+.present-mode .box:hover .edit-tab{opacity:1}
+</style>
+</head>
+<body>
+
+<div class="control-bar">
+  <div class="app-label">Float&nbsp;Captions</div>
+
+  <div class="field">
+    <label>Session ID</label>
+    <input type="text" id="sessionIdInput" placeholder="ABCD-1234">
+  </div>
+  <div class="field">
+    <label>Passcode</label>
+    <input type="text" id="passcodeInput" placeholder="(if restricted)">
+  </div>
+  <div class="field">
+    <label>Language</label>
+    <select id="languageSelect"></select>
+  </div>
+
+  <div class="field">
+    <label>Background</label>
+    <input type="color" id="bgColorInput" value="#000000">
+  </div>
+  <div class="field">
+    <label>Font Color</label>
+    <input type="color" id="fontColorInput" value="#ffffff">
+  </div>
+  <div class="field">
+    <label>Font Size</label>
+    <input type="number" id="fontSizeInput" min="12" max="96" step="2" value="32">
+  </div>
+  <div class="field">
+    <label>Opacity <span class="val" id="opacityVal">70%</span></label>
+    <input type="range" id="opacityInput" min="0" max="100" value="70">
+  </div>
+
+  <div class="spacer"></div>
+  <button id="presentBtn" disabled>▶ Present</button>
+</div>
+
+<div class="canvas" id="canvas">
+  <div class="box" id="captionBox">
+    <div class="handle tl" data-h="tl"></div>
+    <div class="handle tr" data-h="tr"></div>
+    <div class="handle bl" data-h="bl"></div>
+    <div class="handle br" data-h="br"></div>
+    <div class="handle tm" data-h="tm"></div>
+    <div class="handle bm" data-h="bm"></div>
+    <div class="handle ml" data-h="ml"></div>
+    <div class="handle mr" data-h="mr"></div>
+    <div class="edit-tab" id="editTab" title="Back to edit">⚙</div>
+    <div class="box-text" id="boxText"></div>
+  </div>
+</div>
+
+<script>
+// ── CONSTANTS ──
+const STORAGE_KEY = 'wordly_float_caption_settings_v1';
+const IDENTIFIER_KEY = 'wordly_float_identifier';
+const DUMMY_TEXT = 'Live captions will appear here. Drag to move — corners and edges resize.';
+const MIN_W = 160, MIN_H = 60;
+
+// Fallback language list (Gotcha #4: languages.json CORS-blocks from browser fetch;
+// live fetch attempted first, falls back to this if it fails)
+const FALLBACK_LANGUAGES = [
+  {englishName:"Afrikaans",wordlyCode:"af",rtl:false},{englishName:"Albanian",wordlyCode:"sq",rtl:false},
+  {englishName:"Arabic",wordlyCode:"ar",rtl:true},{englishName:"Armenian",wordlyCode:"hy",rtl:false},
+  {englishName:"Bengali",wordlyCode:"bn",rtl:false},{englishName:"Bosnian",wordlyCode:"bs",rtl:false},
+  {englishName:"Bulgarian",wordlyCode:"bg",rtl:false},{englishName:"Cantonese",wordlyCode:"zh-HK",rtl:false},
+  {englishName:"Catalan",wordlyCode:"ca",rtl:false},{englishName:"Chinese (Simplified)",wordlyCode:"zh-CN",rtl:false},
+  {englishName:"Chinese (Traditional)",wordlyCode:"zh-TW",rtl:false},{englishName:"Croatian",wordlyCode:"hr",rtl:false},
+  {englishName:"Czech",wordlyCode:"cs",rtl:false},{englishName:"Danish",wordlyCode:"da",rtl:false},
+  {englishName:"Dutch",wordlyCode:"nl",rtl:false},{englishName:"English (US)",wordlyCode:"en",rtl:false},
+  {englishName:"English (UK)",wordlyCode:"en-GB",rtl:false},{englishName:"English (AU)",wordlyCode:"en-AU",rtl:false},
+  {englishName:"Estonian",wordlyCode:"et",rtl:false},{englishName:"Finnish",wordlyCode:"fi",rtl:false},
+  {englishName:"French (FR)",wordlyCode:"fr",rtl:false},{englishName:"French (CA)",wordlyCode:"fr-CA",rtl:false},
+  {englishName:"Georgian",wordlyCode:"ka",rtl:false},{englishName:"German",wordlyCode:"de",rtl:false},
+  {englishName:"Greek",wordlyCode:"el",rtl:false},{englishName:"Gujarati",wordlyCode:"gu",rtl:false},
+  {englishName:"Haitian Creole",wordlyCode:"ht",rtl:false},{englishName:"Hebrew",wordlyCode:"he",rtl:true},
+  {englishName:"Hindi",wordlyCode:"hi",rtl:false},{englishName:"Hungarian",wordlyCode:"hu",rtl:false},
+  {englishName:"Icelandic",wordlyCode:"is",rtl:false},{englishName:"Indonesian",wordlyCode:"id",rtl:false},
+  {englishName:"Irish",wordlyCode:"ga",rtl:false},{englishName:"Italian",wordlyCode:"it",rtl:false},
+  {englishName:"Japanese",wordlyCode:"ja",rtl:false},{englishName:"Kannada",wordlyCode:"kn",rtl:false},
+  {englishName:"Korean",wordlyCode:"ko",rtl:false},{englishName:"Lao",wordlyCode:"lo",rtl:false},
+  {englishName:"Latvian",wordlyCode:"lv",rtl:false},{englishName:"Lithuanian",wordlyCode:"lt",rtl:false},
+  {englishName:"Macedonian",wordlyCode:"mk",rtl:false},{englishName:"Malay",wordlyCode:"ms",rtl:false},
+  {englishName:"Maltese",wordlyCode:"mt",rtl:false},{englishName:"Norwegian",wordlyCode:"no",rtl:false},
+  {englishName:"Persian",wordlyCode:"fa",rtl:true},{englishName:"Polish",wordlyCode:"pl",rtl:false},
+  {englishName:"Portuguese (PT)",wordlyCode:"pt",rtl:false},{englishName:"Portuguese (BR)",wordlyCode:"pt-BR",rtl:false},
+  {englishName:"Punjabi",wordlyCode:"pa",rtl:false},{englishName:"Romanian",wordlyCode:"ro",rtl:false},
+  {englishName:"Russian",wordlyCode:"ru",rtl:false},{englishName:"Serbian",wordlyCode:"sr",rtl:false},
+  {englishName:"Slovak",wordlyCode:"sk",rtl:false},{englishName:"Slovenian",wordlyCode:"sl",rtl:false},
+  {englishName:"Spanish (ES)",wordlyCode:"es",rtl:false},{englishName:"Spanish (LatAm)",wordlyCode:"es-MX",rtl:false},
+  {englishName:"Swahili",wordlyCode:"sw",rtl:false},{englishName:"Swedish",wordlyCode:"sv",rtl:false},
+  {englishName:"Tagalog",wordlyCode:"tl",rtl:false},{englishName:"Tamil",wordlyCode:"ta",rtl:false},
+  {englishName:"Thai",wordlyCode:"th",rtl:false},{englishName:"Turkish",wordlyCode:"tr",rtl:false},
+  {englishName:"Ukrainian",wordlyCode:"uk",rtl:false},{englishName:"Urdu",wordlyCode:"ur",rtl:true},
+  {englishName:"Welsh",wordlyCode:"cy",rtl:false},{englishName:"Vietnamese",wordlyCode:"vi",rtl:false},
+  {englishName:"Zulu",wordlyCode:"zu",rtl:false}
+];
+
+// ── DOM ──
+const sessionIdInput = document.getElementById('sessionIdInput');
+const passcodeInput = document.getElementById('passcodeInput');
+const languageSelect = document.getElementById('languageSelect');
+const bgColorInput = document.getElementById('bgColorInput');
+const fontColorInput = document.getElementById('fontColorInput');
+const fontSizeInput = document.getElementById('fontSizeInput');
+const opacityInput = document.getElementById('opacityInput');
+const opacityVal = document.getElementById('opacityVal');
+const presentBtn = document.getElementById('presentBtn');
+const box = document.getElementById('captionBox');
+const boxText = document.getElementById('boxText');
+const editTab = document.getElementById('editTab');
+
+// ── STATE ──
+function defaultBox(){
+  const w = Math.min(800, Math.round(window.innerWidth*0.8));
+  const h = 160;
+  return { x: Math.round((window.innerWidth-w)/2), y: Math.max(20, window.innerHeight-h-80), w, h };
+}
+const state = {
+  mode:'edit',
+  box: defaultBox(),
+  style: { bgColor:'#000000', bgOpacity:70, fontColor:'#ffffff', fontSize:32 },
+  session: { sessionId:'', passcode:'', languageCode:'en' }
+};
+
+function loadSettings(){
+  try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if(!raw) return;
+    const p = JSON.parse(raw);
+    if(p.box) state.box = p.box;
+    if(p.style) state.style = Object.assign({}, state.style, p.style);
+    if(p.session) state.session = Object.assign({}, state.session, p.session);
+  }catch(e){}
+}
+function saveSettings(){
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({box:state.box, style:state.style, session:state.session}));
+}
+function getIdentifier(){
+  let id = localStorage.getItem(IDENTIFIER_KEY);
+  if(!id){
+    id = 'wfc-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    localStorage.setItem(IDENTIFIER_KEY, id);
+  }
+  return id;
+}
+
+// ── SESSION ID NORMALIZATION (ABCD-1234) ──
+function normalizeSessionId(raw){
+  const cleaned = (raw||'').replace(/[^A-Za-z0-9]/g,'').toUpperCase();
+  if(cleaned.length !== 8) return null;
+  const alpha = cleaned.slice(0,4), num = cleaned.slice(4);
+  if(!/^[A-Z]{4}$/.test(alpha) || !/^[0-9]{4}$/.test(num)) return null;
+  return alpha + '-' + num;
+}
+
+function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
+
+// ── BOX GEOMETRY / STYLE ──
+function applyBoxGeometry(){
+  box.style.left = state.box.x + 'px';
+  box.style.top = state.box.y + 'px';
+  box.style.width = state.box.w + 'px';
+  box.style.height = state.box.h + 'px';
+}
+function hexToRgba(hex, opacityPct){
+  const h = hex.replace('#','');
+  const r = parseInt(h.substring(0,2),16), g = parseInt(h.substring(2,4),16), b = parseInt(h.substring(4,6),16);
+  return 'rgba(' + r + ',' + g + ',' + b + ',' + (opacityPct/100).toFixed(2) + ')';
+}
+function applyBoxStyle(){
+  box.style.background = hexToRgba(state.style.bgColor, state.style.bgOpacity);
+  boxText.style.color = state.style.fontColor;
+  boxText.style.fontSize = state.style.fontSize + 'px';
+}
+function renderCaptionText(text, isError){
+  boxText.textContent = text;
+  boxText.classList.toggle('error', !!isError);
+}
+
+// ── DRAG / RESIZE (edit mode only) ──
+let dragState = null;
+box.addEventListener('mousedown', (e)=>{
+  if(state.mode !== 'edit') return;
+  if(e.target.classList.contains('handle') || e.target === editTab) return;
+  dragState = {mode:'move', startX:e.clientX, startY:e.clientY, startBox:Object.assign({},state.box)};
+  e.preventDefault();
+});
+document.querySelectorAll('.handle').forEach(h=>{
+  h.addEventListener('mousedown', (e)=>{
+    if(state.mode !== 'edit') return;
+    dragState = {mode:'resize', handle:h.dataset.h, startX:e.clientX, startY:e.clientY, startBox:Object.assign({},state.box)};
+    e.preventDefault(); e.stopPropagation();
+  });
+});
+window.addEventListener('mousemove', (e)=>{
+  if(!dragState) return;
+  const dx = e.clientX - dragState.startX, dy = e.clientY - dragState.startY;
+  const s = dragState.startBox;
+  if(dragState.mode === 'move'){
+    state.box.x = clamp(s.x+dx, 0, window.innerWidth - state.box.w);
+    state.box.y = clamp(s.y+dy, 0, window.innerHeight - state.box.h);
+  } else {
+    const h = dragState.handle;
+    let nx=s.x, ny=s.y, nw=s.w, nh=s.h;
+    if(h.includes('l')){ nx = s.x+dx; nw = s.w-dx; }
+    if(h.includes('r')){ nw = s.w+dx; }
+    if(h.includes('t')){ ny = s.y+dy; nh = s.h-dy; }
+    if(h.includes('b')){ nh = s.h+dy; }
+    if(nw < MIN_W){ if(h.includes('l')) nx = s.x + s.w - MIN_W; nw = MIN_W; }
+    if(nh < MIN_H){ if(h.includes('t')) ny = s.y + s.h - MIN_H; nh = MIN_H; }
+    nx = clamp(nx, 0, window.innerWidth - nw);
+    ny = clamp(ny, 0, window.innerHeight - nh);
+    state.box = {x:nx, y:ny, w:nw, h:nh};
+  }
+  applyBoxGeometry();
+});
+window.addEventListener('mouseup', ()=>{
+  if(dragState){ dragState=null; saveSettings(); }
+});
+window.addEventListener('resize', ()=>{
+  state.box.x = clamp(state.box.x, 0, Math.max(0, window.innerWidth - state.box.w));
+  state.box.y = clamp(state.box.y, 0, Math.max(0, window.innerHeight - state.box.h));
+  applyBoxGeometry();
+});
+
+// ── LANGUAGE DROPDOWN ──
+function populateLanguageSelect(list){
+  const sorted = list.slice().sort((a,b)=>a.englishName.localeCompare(b.englishName));
+  languageSelect.innerHTML = '';
+  sorted.forEach(lang=>{
+    const opt = document.createElement('option');
+    opt.value = lang.wordlyCode;
+    opt.textContent = lang.englishName;
+    languageSelect.appendChild(opt);
+  });
+  languageSelect.value = state.session.languageCode || 'en';
+}
+async function loadLanguages(){
+  let list = FALLBACK_LANGUAGES;
+  try{
+    const resp = await fetch('https://assets.wordly.ai/language-config/languages.json');
+    if(resp.ok){
+      const data = await resp.json();
+      if(data && Array.isArray(data.languages) && data.languages.length) list = data.languages;
+    }
+  }catch(e){ /* CORS from file:// origin — expected, fallback list used (Gotcha #4) */ }
+  populateLanguageSelect(list);
+}
+
+// ── WSS /attend ──
+let ws = null;
+let phraseState = { latestText:{}, finalizedIds:new Set(), activeId:null };
+
+function connectWSS(){
+  const sid = normalizeSessionId(state.session.sessionId);
+  renderCaptionText('Connecting…');
+  ws = new WebSocket('wss://endpoint.wordly.ai/attend');
+  ws.onopen = () => {
+    const msg = {
+      type:'connect',
+      presentationCode: sid,
+      languageCode: state.session.languageCode || 'en',
+      identifier: getIdentifier(),
+      connectionCode: 'wordly-float-captions'
+    };
+    if(state.session.passcode) msg.accessKey = state.session.passcode;
+    ws.send(JSON.stringify(msg));
+  };
+  ws.onmessage = (evt) => {
+    let msg;
+    try{ msg = JSON.parse(evt.data); }catch(e){ return; }
+    if(msg.type === 'status'){
+      if(!msg.success) renderCaptionText(msg.message || 'Connection failed — check session ID / passcode', true);
+    } else if(msg.type === 'phrase'){
+      handlePhrase(msg);
+    } else if(msg.type === 'end'){
+      renderCaptionText('Session ended', true);
+    } else if(msg.type === 'error'){
+      renderCaptionText(msg.message || 'Connection error', true);
+    }
+  };
+  ws.onclose = () => { if(state.mode === 'present') renderCaptionText('Disconnected', true); };
+  ws.onerror = () => {};
+}
+function handlePhrase(msg){
+  const id = msg.phraseId;
+  if(phraseState.finalizedIds.has(id)) return;
+  phraseState.latestText[id] = msg.translatedText;
+  phraseState.activeId = id;
+  if(msg.isFinal) phraseState.finalizedIds.add(id);
+  renderCaptionText(phraseState.latestText[id] || '');
+}
+function disconnectWSS(){
+  if(ws){
+    try{ ws.send(JSON.stringify({type:'disconnect'})); }catch(e){}
+    try{ ws.close(); }catch(e){}
+    ws = null;
+  }
+  phraseState = { latestText:{}, finalizedIds:new Set(), activeId:null };
+}
+
+// ── MODE SWITCH ──
+function enterPresentMode(){
+  const sid = normalizeSessionId(sessionIdInput.value);
+  if(!sid) return;
+  state.session.sessionId = sid;
+  state.session.passcode = passcodeInput.value.trim();
+  state.session.languageCode = languageSelect.value;
+  saveSettings();
+  state.mode = 'present';
+  document.body.classList.add('present-mode');
+  connectWSS();
+}
+function enterEditMode(){
+  state.mode = 'edit';
+  document.body.classList.remove('present-mode');
+  disconnectWSS();
+  renderCaptionText(DUMMY_TEXT);
+}
+presentBtn.addEventListener('click', enterPresentMode);
+editTab.addEventListener('click', enterEditMode);
+document.addEventListener('keydown', (e)=>{
+  if(e.key === 'Escape' && state.mode === 'present') enterEditMode();
+});
+
+// ── INPUT WIRING ──
+function validateSessionIdInput(){
+  const valid = !!normalizeSessionId(sessionIdInput.value);
+  sessionIdInput.classList.toggle('invalid', sessionIdInput.value.length>0 && !valid);
+  presentBtn.disabled = !valid;
+}
+sessionIdInput.addEventListener('input', validateSessionIdInput);
+passcodeInput.addEventListener('input', ()=>{ state.session.passcode = passcodeInput.value.trim(); saveSettings(); });
+languageSelect.addEventListener('change', ()=>{ state.session.languageCode = languageSelect.value; saveSettings(); });
+bgColorInput.addEventListener('input', ()=>{ state.style.bgColor = bgColorInput.value; applyBoxStyle(); saveSettings(); });
+fontColorInput.addEventListener('input', ()=>{ state.style.fontColor = fontColorInput.value; applyBoxStyle(); saveSettings(); });
+fontSizeInput.addEventListener('input', ()=>{ state.style.fontSize = parseInt(fontSizeInput.value,10)||32; applyBoxStyle(); saveSettings(); });
+opacityInput.addEventListener('input', ()=>{
+  state.style.bgOpacity = parseInt(opacityInput.value,10);
+  opacityVal.textContent = state.style.bgOpacity + '%';
+  applyBoxStyle(); saveSettings();
+});
+
+// ── INIT ──
+loadSettings();
+sessionIdInput.value = state.session.sessionId;
+passcodeInput.value = state.session.passcode;
+bgColorInput.value = state.style.bgColor;
+fontColorInput.value = state.style.fontColor;
+fontSizeInput.value = state.style.fontSize;
+opacityInput.value = state.style.bgOpacity;
+opacityVal.textContent = state.style.bgOpacity + '%';
+applyBoxGeometry();
+applyBoxStyle();
+renderCaptionText(DUMMY_TEXT);
+validateSessionIdInput();
+loadLanguages();
+</script>
+</body>
+</html>
