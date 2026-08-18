@@ -363,7 +363,7 @@ function connectWSS(){
       presentationCode: sid,
       languageCode: state.session.languageCode || 'en',
       identifier: getIdentifier(),
-      connectionCode: 'wordly-float-captions'
+      connectionCode: '9005'
     };
     if(state.session.passcode) msg.accessKey = state.session.passcode;
     ws.send(JSON.stringify(msg));
