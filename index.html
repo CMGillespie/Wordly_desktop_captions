@@ -1,8 +1,12 @@
 <!--
-  Wordly Float Captions — v1.0
+  Wordly Float Captions — v1.1
   Single-file floating caption window. Connects directly to Wordly WSS /attend,
   renders live translated captions in a draggable/resizable box.
-  Launch: chrome --app="file:///path/to/index.html"
+  v1.1 changes: Present now opens a dedicated popup window (frameless-ish, no
+  --app flag needed) instead of switching modes in the same tab; session ID
+  input reformats to ABCD-1234 on blur; connectionCode set to registered
+  scratch value 9005 (Gotcha #11 — get a real assigned code before shipping
+  past POC).
   No apikey used or needed — /attend auth is sessionID (+ passcode if restricted) only.
 -->
 <!DOCTYPE html>
@@ -71,7 +75,7 @@ body:not(.present-mode) .canvas{
   user-select:none;padding:14px;
 }
 body:not(.present-mode) .box{outline:2px dashed var(--accent-2);outline-offset:3px}
-.present-mode .box{cursor:default}
+.present-mode .box{cursor:default;position:fixed;inset:0;left:0;top:0;width:100%;height:100%;border-radius:0}
 .box-text{width:100%;line-height:1.35;overflow-wrap:break-word}
 .box-text.error{color:#ff8fa3 !important}
 
@@ -87,14 +91,14 @@ body:not(.present-mode) .box{outline:2px dashed var(--accent-2);outline-offset:3
 .handle.ml{left:-5px;top:calc(50% - 5px);cursor:ew-resize}
 .handle.mr{right:-5px;top:calc(50% - 5px);cursor:ew-resize}
 
-/* return-to-edit tab, present mode only, fades in on box hover */
-.edit-tab{
+/* close tab, popup present-window only, fades in on box hover */
+.close-tab{
   position:absolute;top:6px;left:6px;width:26px;height:26px;border-radius:6px;
   background:rgba(20,23,28,.85);color:#fff;display:none;align-items:center;justify-content:center;
   font-size:14px;cursor:pointer;opacity:0;transition:opacity .15s;z-index:10
 }
-.present-mode .edit-tab{display:flex}
-.present-mode .box:hover .edit-tab{opacity:1}
+.present-mode .close-tab{display:flex}
+.present-mode .box:hover .close-tab{opacity:1}
 </style>
 </head>
 <body>
@@ -146,7 +150,7 @@ body:not(.present-mode) .box{outline:2px dashed var(--accent-2);outline-offset:3
     <div class="handle bm" data-h="bm"></div>
     <div class="handle ml" data-h="ml"></div>
     <div class="handle mr" data-h="mr"></div>
-    <div class="edit-tab" id="editTab" title="Back to edit">⚙</div>
+    <div class="close-tab" id="closeTab" title="Close">✕</div>
     <div class="box-text" id="boxText"></div>
   </div>
 </div>
@@ -209,7 +213,7 @@ const opacityVal = document.getElementById('opacityVal');
 const presentBtn = document.getElementById('presentBtn');
 const box = document.getElementById('captionBox');
 const boxText = document.getElementById('boxText');
-const editTab = document.getElementById('editTab');
+const closeTab = document.getElementById('closeTab');
 
 // ── STATE ──
 function defaultBox(){
@@ -283,7 +287,7 @@ function renderCaptionText(text, isError){
 let dragState = null;
 box.addEventListener('mousedown', (e)=>{
   if(state.mode !== 'edit') return;
-  if(e.target.classList.contains('handle') || e.target === editTab) return;
+  if(e.target.classList.contains('handle') || e.target === closeTab) return;
   dragState = {mode:'move', startX:e.clientX, startY:e.clientY, startBox:Object.assign({},state.box)};
   e.preventDefault();
 });
@@ -381,7 +385,7 @@ function connectWSS(){
       renderCaptionText(msg.message || 'Connection error', true);
     }
   };
-  ws.onclose = () => { if(state.mode === 'present') renderCaptionText('Disconnected', true); };
+  ws.onclose = () => { if(isPresentWindow) renderCaptionText('Disconnected', true); };
   ws.onerror = () => {};
 }
 function handlePhrase(msg){
@@ -401,29 +405,25 @@ function disconnectWSS(){
   phraseState = { latestText:{}, finalizedIds:new Set(), activeId:null };
 }
 
-// ── MODE SWITCH ──
-function enterPresentMode(){
+// ── POPUP PRESENT WINDOW ──
+let presentWin = null;
+function openPresentWindow(){
   const sid = normalizeSessionId(sessionIdInput.value);
   if(!sid) return;
   state.session.sessionId = sid;
   state.session.passcode = passcodeInput.value.trim();
   state.session.languageCode = languageSelect.value;
   saveSettings();
-  state.mode = 'present';
-  document.body.classList.add('present-mode');
-  connectWSS();
+  if(presentWin && !presentWin.closed){ presentWin.focus(); return; }
+  const w = state.box.w, h = state.box.h;
+  const left = Math.round(window.screenX + state.box.x);
+  const top = Math.round(window.screenY + state.box.y);
+  const features = 'width='+w+',height='+h+',left='+left+',top='+top+
+    ',toolbar=no,location=no,menubar=no,status=no,scrollbars=no,resizable=yes';
+  const url = window.location.origin + window.location.pathname + '?present=1';
+  presentWin = window.open(url, 'wordlyFloatCaptionsPresent', features);
 }
-function enterEditMode(){
-  state.mode = 'edit';
-  document.body.classList.remove('present-mode');
-  disconnectWSS();
-  renderCaptionText(DUMMY_TEXT);
-}
-presentBtn.addEventListener('click', enterPresentMode);
-editTab.addEventListener('click', enterEditMode);
-document.addEventListener('keydown', (e)=>{
-  if(e.key === 'Escape' && state.mode === 'present') enterEditMode();
-});
+presentBtn.addEventListener('click', openPresentWindow);
 
 // ── INPUT WIRING ──
 function validateSessionIdInput(){
@@ -432,6 +432,10 @@ function validateSessionIdInput(){
   presentBtn.disabled = !valid;
 }
 sessionIdInput.addEventListener('input', validateSessionIdInput);
+sessionIdInput.addEventListener('blur', ()=>{
+  const sid = normalizeSessionId(sessionIdInput.value);
+  if(sid) sessionIdInput.value = sid;
+});
 passcodeInput.addEventListener('input', ()=>{ state.session.passcode = passcodeInput.value.trim(); saveSettings(); });
 languageSelect.addEventListener('change', ()=>{ state.session.languageCode = languageSelect.value; saveSettings(); });
 bgColorInput.addEventListener('input', ()=>{ state.style.bgColor = bgColorInput.value; applyBoxStyle(); saveSettings(); });
@@ -444,19 +448,31 @@ opacityInput.addEventListener('input', ()=>{
 });
 
 // ── INIT ──
+const isPresentWindow = new URLSearchParams(window.location.search).get('present') === '1';
 loadSettings();
-sessionIdInput.value = state.session.sessionId;
-passcodeInput.value = state.session.passcode;
-bgColorInput.value = state.style.bgColor;
-fontColorInput.value = state.style.fontColor;
-fontSizeInput.value = state.style.fontSize;
-opacityInput.value = state.style.bgOpacity;
-opacityVal.textContent = state.style.bgOpacity + '%';
-applyBoxGeometry();
-applyBoxStyle();
-renderCaptionText(DUMMY_TEXT);
-validateSessionIdInput();
-loadLanguages();
+
+if(isPresentWindow){
+  document.body.classList.add('present-mode');
+  applyBoxStyle();
+  renderCaptionText('Connecting…');
+  closeTab.addEventListener('click', ()=>{ disconnectWSS(); window.close(); });
+  document.addEventListener('keydown', (e)=>{ if(e.key === 'Escape'){ disconnectWSS(); window.close(); } });
+  window.addEventListener('beforeunload', disconnectWSS);
+  connectWSS();
+} else {
+  sessionIdInput.value = state.session.sessionId;
+  passcodeInput.value = state.session.passcode;
+  bgColorInput.value = state.style.bgColor;
+  fontColorInput.value = state.style.fontColor;
+  fontSizeInput.value = state.style.fontSize;
+  opacityInput.value = state.style.bgOpacity;
+  opacityVal.textContent = state.style.bgOpacity + '%';
+  applyBoxGeometry();
+  applyBoxStyle();
+  renderCaptionText(DUMMY_TEXT);
+  validateSessionIdInput();
+  loadLanguages();
+}
 </script>
 </body>
 </html>
