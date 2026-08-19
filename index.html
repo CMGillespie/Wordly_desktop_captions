@@ -1,12 +1,15 @@
 <!--
-  Wordly Float Captions — v1.1
-  Single-file floating caption window. Connects directly to Wordly WSS /attend,
-  renders live translated captions in a draggable/resizable box.
-  v1.1 changes: Present now opens a dedicated popup window (frameless-ish, no
-  --app flag needed) instead of switching modes in the same tab; session ID
-  input reformats to ABCD-1234 on blur; connectionCode set to registered
-  scratch value 9005 (Gotcha #11 — get a real assigned code before shipping
-  past POC).
+  Wordly Float Captions — v1.2
+  Single-file floating caption window. Connects directly to Wordly WSS /attend.
+  Two live paths:
+   - Present: pops a dedicated window (solo/floating use, drag over other apps)
+   - Go Live: toggles THIS window in place — hides handles/control bar, swaps
+     sample text for live captions, box stays exactly where you sized it.
+     Built for broadcast/hardware-key pipelines (ATEM etc.) where the whole
+     browser window is what gets captured — no second window's chrome/title
+     bar to fight with when cropping.
+  connectionCode: registered scratch value 9005 (Gotcha #11 — get a real
+  assigned code before shipping past POC).
   No apikey used or needed — /attend auth is sessionID (+ passcode if restricted) only.
 -->
 <!DOCTYPE html>
@@ -37,7 +40,7 @@ html,body{margin:0;padding:0;height:100%;overflow:hidden;font-family:system-ui,-
   background:var(--panel-bg);border-bottom:1px solid var(--panel-border);
   color:var(--panel-text);padding:10px 16px;
 }
-.present-mode .control-bar{display:none}
+.present-mode .control-bar, .live-mode .control-bar{display:none}
 .field{display:flex;flex-direction:column;gap:3px}
 .field label{font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:var(--panel-muted)}
 .field input[type=text],.field select{
@@ -58,6 +61,13 @@ html,body{margin:0;padding:0;height:100%;overflow:hidden;font-family:system-ui,-
 }
 #presentBtn:disabled{opacity:.35;cursor:not-allowed}
 #presentBtn:not(:disabled):hover{opacity:.9}
+#goLiveBtn{
+  align-self:center;background:#2a2f3a;border:1px solid var(--panel-border);
+  color:var(--panel-text);border-radius:6px;padding:9px 16px;font-size:13px;font-weight:600;
+  cursor:pointer;white-space:nowrap
+}
+#goLiveBtn:disabled{opacity:.35;cursor:not-allowed}
+#goLiveBtn:not(:disabled):hover{background:#333947}
 
 /* ── CANVAS ── */
 .canvas{position:absolute;inset:0;top:64px}
@@ -74,14 +84,15 @@ body:not(.present-mode) .canvas{
   text-align:center;border-radius:6px;overflow:hidden;cursor:move;
   user-select:none;padding:14px;
 }
-body:not(.present-mode) .box{outline:2px dashed var(--accent-2);outline-offset:3px}
+body:not(.present-mode):not(.live-mode) .box{outline:2px dashed var(--accent-2);outline-offset:3px}
 .present-mode .box{cursor:default;position:fixed;inset:0;left:0;top:0;width:100%;height:100%;border-radius:0}
+.live-mode .box{cursor:default}
 .box-text{width:100%;line-height:1.35;overflow-wrap:break-word}
 .box-text.error{color:#ff8fa3 !important}
 
 /* resize handles */
 .handle{position:absolute;width:10px;height:10px;background:var(--accent-2);border:1px solid #fff;border-radius:2px;z-index:5}
-.present-mode .handle{display:none}
+.present-mode .handle, .live-mode .handle{display:none}
 .handle.tl{top:-5px;left:-5px;cursor:nwse-resize}
 .handle.tr{top:-5px;right:-5px;cursor:nesw-resize}
 .handle.bl{bottom:-5px;left:-5px;cursor:nesw-resize}
@@ -99,6 +110,15 @@ body:not(.present-mode) .box{outline:2px dashed var(--accent-2);outline-offset:3
 }
 .present-mode .close-tab{display:flex}
 .present-mode .box:hover .close-tab{opacity:1}
+
+/* live-mode return-to-setup tab, fades in on box hover */
+.live-edit-tab{
+  position:absolute;top:6px;left:6px;width:26px;height:26px;border-radius:6px;
+  background:rgba(20,23,28,.85);color:#fff;display:none;align-items:center;justify-content:center;
+  font-size:14px;cursor:pointer;opacity:0;transition:opacity .15s;z-index:10
+}
+.live-mode .live-edit-tab{display:flex}
+.live-mode .box:hover .live-edit-tab{opacity:1}
 </style>
 </head>
 <body>
@@ -137,6 +157,7 @@ body:not(.present-mode) .box{outline:2px dashed var(--accent-2);outline-offset:3
   </div>
 
   <div class="spacer"></div>
+  <button id="goLiveBtn" disabled>● Go Live</button>
   <button id="presentBtn" disabled>▶ Present</button>
 </div>
 
@@ -151,6 +172,7 @@ body:not(.present-mode) .box{outline:2px dashed var(--accent-2);outline-offset:3
     <div class="handle ml" data-h="ml"></div>
     <div class="handle mr" data-h="mr"></div>
     <div class="close-tab" id="closeTab" title="Close">✕</div>
+    <div class="live-edit-tab" id="liveEditTab" title="Back to setup">⚙</div>
     <div class="box-text" id="boxText"></div>
   </div>
 </div>
@@ -211,6 +233,8 @@ const fontSizeInput = document.getElementById('fontSizeInput');
 const opacityInput = document.getElementById('opacityInput');
 const opacityVal = document.getElementById('opacityVal');
 const presentBtn = document.getElementById('presentBtn');
+const goLiveBtn = document.getElementById('goLiveBtn');
+const liveEditTab = document.getElementById('liveEditTab');
 const box = document.getElementById('captionBox');
 const boxText = document.getElementById('boxText');
 const closeTab = document.getElementById('closeTab');
@@ -223,6 +247,7 @@ function defaultBox(){
 }
 const state = {
   mode:'edit',
+  liveMode:false,
   box: defaultBox(),
   style: { bgColor:'#000000', bgOpacity:70, fontColor:'#ffffff', fontSize:32 },
   session: { sessionId:'', passcode:'', languageCode:'en' }
@@ -286,14 +311,14 @@ function renderCaptionText(text, isError){
 // ── DRAG / RESIZE (edit mode only) ──
 let dragState = null;
 box.addEventListener('mousedown', (e)=>{
-  if(state.mode !== 'edit') return;
-  if(e.target.classList.contains('handle') || e.target === closeTab) return;
+  if(state.mode !== 'edit' || state.liveMode) return;
+  if(e.target.classList.contains('handle') || e.target === closeTab || e.target === liveEditTab) return;
   dragState = {mode:'move', startX:e.clientX, startY:e.clientY, startBox:Object.assign({},state.box)};
   e.preventDefault();
 });
 document.querySelectorAll('.handle').forEach(h=>{
   h.addEventListener('mousedown', (e)=>{
-    if(state.mode !== 'edit') return;
+    if(state.mode !== 'edit' || state.liveMode) return;
     dragState = {mode:'resize', handle:h.dataset.h, startX:e.clientX, startY:e.clientY, startBox:Object.assign({},state.box)};
     e.preventDefault(); e.stopPropagation();
   });
@@ -385,7 +410,7 @@ function connectWSS(){
       renderCaptionText(msg.message || 'Connection error', true);
     }
   };
-  ws.onclose = () => { if(isPresentWindow) renderCaptionText('Disconnected', true); };
+  ws.onclose = () => { if(isPresentWindow || state.liveMode) renderCaptionText('Disconnected', true); };
   ws.onerror = () => {};
 }
 function handlePhrase(msg){
@@ -425,11 +450,36 @@ function openPresentWindow(){
 }
 presentBtn.addEventListener('click', openPresentWindow);
 
+// ── GO LIVE (in-place, same window — for broadcast/hardware key pipelines) ──
+function enterLiveMode(){
+  const sid = normalizeSessionId(sessionIdInput.value);
+  if(!sid) return;
+  state.session.sessionId = sid;
+  state.session.passcode = passcodeInput.value.trim();
+  state.session.languageCode = languageSelect.value;
+  saveSettings();
+  state.liveMode = true;
+  document.body.classList.add('live-mode');
+  connectWSS();
+}
+function exitLiveMode(){
+  state.liveMode = false;
+  document.body.classList.remove('live-mode');
+  disconnectWSS();
+  renderCaptionText(DUMMY_TEXT);
+}
+goLiveBtn.addEventListener('click', enterLiveMode);
+liveEditTab.addEventListener('click', exitLiveMode);
+document.addEventListener('keydown', (e)=>{
+  if(e.key === 'Escape' && state.liveMode) exitLiveMode();
+});
+
 // ── INPUT WIRING ──
 function validateSessionIdInput(){
   const valid = !!normalizeSessionId(sessionIdInput.value);
   sessionIdInput.classList.toggle('invalid', sessionIdInput.value.length>0 && !valid);
   presentBtn.disabled = !valid;
+  goLiveBtn.disabled = !valid;
 }
 sessionIdInput.addEventListener('input', validateSessionIdInput);
 sessionIdInput.addEventListener('blur', ()=>{
