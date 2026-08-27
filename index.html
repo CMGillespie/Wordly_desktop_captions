@@ -1,13 +1,12 @@
 <!--
-  Wordly Float Captions — v1.2
+  Wordly Float Captions — v1.3
   Single-file floating caption window. Connects directly to Wordly WSS /attend.
   Two live paths:
    - Present: pops a dedicated window (solo/floating use, drag over other apps)
-   - Go Live: toggles THIS window in place — hides handles/control bar, swaps
-     sample text for live captions, box stays exactly where you sized it.
-     Built for broadcast/hardware-key pipelines (ATEM etc.) where the whole
-     browser window is what gets captured — no second window's chrome/title
-     bar to fight with when cropping.
+   - Go Live: toggles THIS window in place, for broadcast/hardware-key pipelines
+  v1.3: idle fade — Wordly's /attend sends nothing during silence, so the last
+  phrase would otherwise sit on screen forever. After 10s with no new phrase,
+  text fades out over 2s; any new phrase snaps it back and resets the clock.
   connectionCode: registered scratch value 9005 (Gotcha #11 — get a real
   assigned code before shipping past POC).
   No apikey used or needed — /attend auth is sessionID (+ passcode if restricted) only.
@@ -87,7 +86,7 @@ body:not(.present-mode) .canvas{
 body:not(.present-mode):not(.live-mode) .box{outline:2px dashed var(--accent-2);outline-offset:3px}
 .present-mode .box{cursor:default;position:fixed;inset:0;left:0;top:0;width:100%;height:100%;border-radius:0}
 .live-mode .box{cursor:default}
-.box-text{width:100%;line-height:1.35;overflow-wrap:break-word}
+.box-text{width:100%;line-height:1.35;overflow-wrap:break-word;transition:opacity 2s ease}
 .box-text.error{color:#ff8fa3 !important}
 
 /* resize handles */
@@ -304,6 +303,7 @@ function applyBoxStyle(){
   boxText.style.fontSize = state.style.fontSize + 'px';
 }
 function renderCaptionText(text, isError){
+  boxText.style.opacity = '1';
   boxText.textContent = text;
   boxText.classList.toggle('error', !!isError);
 }
@@ -382,6 +382,22 @@ async function loadLanguages(){
 let ws = null;
 let phraseState = { latestText:{}, finalizedIds:new Set(), activeId:null };
 
+const IDLE_TIMEOUT_MS = 10000;
+let lastPhraseTime = 0;
+let idleCheckTimer = null;
+function startIdleWatcher(){
+  lastPhraseTime = Date.now();
+  boxText.style.opacity = '1';
+  if(idleCheckTimer) clearInterval(idleCheckTimer);
+  idleCheckTimer = setInterval(()=>{
+    if(Date.now() - lastPhraseTime >= IDLE_TIMEOUT_MS) boxText.style.opacity = '0';
+  }, 500);
+}
+function stopIdleWatcher(){
+  if(idleCheckTimer){ clearInterval(idleCheckTimer); idleCheckTimer = null; }
+  boxText.style.opacity = '1';
+}
+
 function connectWSS(){
   const sid = normalizeSessionId(state.session.sessionId);
   renderCaptionText('Connecting…');
@@ -402,6 +418,7 @@ function connectWSS(){
     try{ msg = JSON.parse(evt.data); }catch(e){ return; }
     if(msg.type === 'status'){
       if(!msg.success) renderCaptionText(msg.message || 'Connection failed — check session ID / passcode', true);
+      else startIdleWatcher();
     } else if(msg.type === 'phrase'){
       handlePhrase(msg);
     } else if(msg.type === 'end'){
@@ -410,7 +427,7 @@ function connectWSS(){
       renderCaptionText(msg.message || 'Connection error', true);
     }
   };
-  ws.onclose = () => { if(isPresentWindow || state.liveMode) renderCaptionText('Disconnected', true); };
+  ws.onclose = () => { stopIdleWatcher(); if(isPresentWindow || state.liveMode) renderCaptionText('Disconnected', true); };
   ws.onerror = () => {};
 }
 function handlePhrase(msg){
@@ -419,9 +436,11 @@ function handlePhrase(msg){
   phraseState.latestText[id] = msg.translatedText;
   phraseState.activeId = id;
   if(msg.isFinal) phraseState.finalizedIds.add(id);
+  lastPhraseTime = Date.now();
   renderCaptionText(phraseState.latestText[id] || '');
 }
 function disconnectWSS(){
+  stopIdleWatcher();
   if(ws){
     try{ ws.send(JSON.stringify({type:'disconnect'})); }catch(e){}
     try{ ws.close(); }catch(e){}
