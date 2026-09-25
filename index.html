@@ -1,12 +1,13 @@
 <!--
-  Wordly Float Captions — v1.3
+  Wordly Float Captions — v1.4
   Single-file floating caption window. Connects directly to Wordly WSS /attend.
   Two live paths:
    - Present: pops a dedicated window (solo/floating use, drag over other apps)
    - Go Live: toggles THIS window in place, for broadcast/hardware-key pipelines
-  v1.3: idle fade — Wordly's /attend sends nothing during silence, so the last
-  phrase would otherwise sit on screen forever. After 10s with no new phrase,
-  text fades out over 2s; any new phrase snaps it back and resets the clock.
+  v1.4: rolling multi-line captions (Lines control, default 2) instead of a
+  single replaced line. Two-stage idle handling: 5s with no new phrase retires
+  the oldest visible line (a "scroll"); if silence continues, everything fades
+  and clears by ~15s total. Any new phrase at any point resets both timers.
   connectionCode: registered scratch value 9005 (Gotcha #11 — get a real
   assigned code before shipping past POC).
   No apikey used or needed — /attend auth is sessionID (+ passcode if restricted) only.
@@ -86,8 +87,10 @@ body:not(.present-mode) .canvas{
 body:not(.present-mode):not(.live-mode) .box{outline:2px dashed var(--accent-2);outline-offset:3px}
 .present-mode .box{cursor:default;position:fixed;inset:0;left:0;top:0;width:100%;height:100%;border-radius:0}
 .live-mode .box{cursor:default}
-.box-text{width:100%;line-height:1.35;overflow-wrap:break-word;transition:opacity 2s ease}
-.box-text.error{color:#ff8fa3 !important}
+
+.caption-lines{display:flex;flex-direction:column;justify-content:center;gap:6px;width:100%;transition:opacity 2s ease}
+.caption-lines.error{color:#ff8fa3 !important}
+.caption-line{width:100%;line-height:1.35;overflow-wrap:break-word}
 
 /* resize handles */
 .handle{position:absolute;width:10px;height:10px;background:var(--accent-2);border:1px solid #fff;border-radius:2px;z-index:5}
@@ -101,7 +104,7 @@ body:not(.present-mode):not(.live-mode) .box{outline:2px dashed var(--accent-2);
 .handle.ml{left:-5px;top:calc(50% - 5px);cursor:ew-resize}
 .handle.mr{right:-5px;top:calc(50% - 5px);cursor:ew-resize}
 
-/* close tab, popup present-window only, fades in on box hover */
+/* return-to-edit/close tab (popup present window) */
 .close-tab{
   position:absolute;top:6px;left:6px;width:26px;height:26px;border-radius:6px;
   background:rgba(20,23,28,.85);color:#fff;display:none;align-items:center;justify-content:center;
@@ -151,6 +154,10 @@ body:not(.present-mode):not(.live-mode) .box{outline:2px dashed var(--accent-2);
     <input type="number" id="fontSizeInput" min="12" max="96" step="2" value="32">
   </div>
   <div class="field">
+    <label>Lines</label>
+    <input type="number" id="linesInput" min="1" max="4" step="1" value="2">
+  </div>
+  <div class="field">
     <label>Opacity <span class="val" id="opacityVal">70%</span></label>
     <input type="range" id="opacityInput" min="0" max="100" value="70">
   </div>
@@ -172,7 +179,7 @@ body:not(.present-mode):not(.live-mode) .box{outline:2px dashed var(--accent-2);
     <div class="handle mr" data-h="mr"></div>
     <div class="close-tab" id="closeTab" title="Close">✕</div>
     <div class="live-edit-tab" id="liveEditTab" title="Back to setup">⚙</div>
-    <div class="box-text" id="boxText"></div>
+    <div class="caption-lines" id="captionLines"></div>
   </div>
 </div>
 
@@ -183,8 +190,6 @@ const IDENTIFIER_KEY = 'wordly_float_identifier';
 const DUMMY_TEXT = 'Live captions will appear here. Drag to move — corners and edges resize.';
 const MIN_W = 160, MIN_H = 60;
 
-// Fallback language list (Gotcha #4: languages.json CORS-blocks from browser fetch;
-// live fetch attempted first, falls back to this if it fails)
 const FALLBACK_LANGUAGES = [
   {englishName:"Afrikaans",wordlyCode:"af",rtl:false},{englishName:"Albanian",wordlyCode:"sq",rtl:false},
   {englishName:"Arabic",wordlyCode:"ar",rtl:true},{englishName:"Armenian",wordlyCode:"hy",rtl:false},
@@ -229,14 +234,15 @@ const languageSelect = document.getElementById('languageSelect');
 const bgColorInput = document.getElementById('bgColorInput');
 const fontColorInput = document.getElementById('fontColorInput');
 const fontSizeInput = document.getElementById('fontSizeInput');
+const linesInput = document.getElementById('linesInput');
 const opacityInput = document.getElementById('opacityInput');
 const opacityVal = document.getElementById('opacityVal');
 const presentBtn = document.getElementById('presentBtn');
 const goLiveBtn = document.getElementById('goLiveBtn');
+const closeTab = document.getElementById('closeTab');
 const liveEditTab = document.getElementById('liveEditTab');
 const box = document.getElementById('captionBox');
-const boxText = document.getElementById('boxText');
-const closeTab = document.getElementById('closeTab');
+const captionLinesEl = document.getElementById('captionLines');
 
 // ── STATE ──
 function defaultBox(){
@@ -248,7 +254,7 @@ const state = {
   mode:'edit',
   liveMode:false,
   box: defaultBox(),
-  style: { bgColor:'#000000', bgOpacity:70, fontColor:'#ffffff', fontSize:32 },
+  style: { bgColor:'#000000', bgOpacity:70, fontColor:'#ffffff', fontSize:32, lines:2 },
   session: { sessionId:'', passcode:'', languageCode:'en' }
 };
 
@@ -282,7 +288,6 @@ function normalizeSessionId(raw){
   if(!/^[A-Z]{4}$/.test(alpha) || !/^[0-9]{4}$/.test(num)) return null;
   return alpha + '-' + num;
 }
-
 function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
 
 // ── BOX GEOMETRY / STYLE ──
@@ -299,13 +304,32 @@ function hexToRgba(hex, opacityPct){
 }
 function applyBoxStyle(){
   box.style.background = hexToRgba(state.style.bgColor, state.style.bgOpacity);
-  boxText.style.color = state.style.fontColor;
-  boxText.style.fontSize = state.style.fontSize + 'px';
+  captionLinesEl.style.color = state.style.fontColor;
+  captionLinesEl.style.fontSize = state.style.fontSize + 'px';
 }
+
+// ── CAPTION RENDERING (status/dummy: single line | live: rolling multi-line) ──
 function renderCaptionText(text, isError){
-  boxText.style.opacity = '1';
-  boxText.textContent = text;
-  boxText.classList.toggle('error', !!isError);
+  captionLinesEl.style.opacity = '1';
+  captionLinesEl.classList.toggle('error', !!isError);
+  captionLinesEl.innerHTML = '';
+  const div = document.createElement('div');
+  div.className = 'caption-line';
+  div.textContent = text;
+  captionLinesEl.appendChild(div);
+}
+function renderLines(){
+  const lines = committedLines.concat(currentText ? [currentText] : []);
+  const shown = lines.slice(-state.style.lines);
+  captionLinesEl.classList.remove('error');
+  captionLinesEl.innerHTML = '';
+  shown.forEach(function(text){
+    const div = document.createElement('div');
+    div.className = 'caption-line';
+    div.textContent = text;
+    captionLinesEl.appendChild(div);
+  });
+  captionLinesEl.style.opacity = '1';
 }
 
 // ── DRAG / RESIZE (edit mode only) ──
@@ -380,22 +404,50 @@ async function loadLanguages(){
 
 // ── WSS /attend ──
 let ws = null;
-let phraseState = { latestText:{}, finalizedIds:new Set(), activeId:null };
+let committedLines = [];      // finalized lines, oldest first
+let currentPhraseId = null;   // phraseId currently live (may not be finalized yet)
+let currentText = '';
+let finalizedIds = new Set();
 
-const IDLE_TIMEOUT_MS = 10000;
+// idle scroll/clear: 5s no new phrase -> retire oldest line; ~15s total -> full clear
+const IDLE_SCROLL_MS = 5000;
+const IDLE_CLEAR_START_MS = 13000;
+const IDLE_FADE_MS = 2000;
 let lastPhraseTime = 0;
 let idleCheckTimer = null;
+let idleScrolled = false;
+let idleCleared = false;
+
 function startIdleWatcher(){
   lastPhraseTime = Date.now();
-  boxText.style.opacity = '1';
+  idleScrolled = false;
+  idleCleared = false;
+  captionLinesEl.style.opacity = '1';
   if(idleCheckTimer) clearInterval(idleCheckTimer);
   idleCheckTimer = setInterval(()=>{
-    if(Date.now() - lastPhraseTime >= IDLE_TIMEOUT_MS) boxText.style.opacity = '0';
+    const elapsed = Date.now() - lastPhraseTime;
+    if(!idleCleared && elapsed >= IDLE_CLEAR_START_MS){
+      idleCleared = true;
+      captionLinesEl.style.opacity = '0';
+      setTimeout(()=>{
+        committedLines = [];
+        currentText = '';
+        currentPhraseId = null;
+        captionLinesEl.innerHTML = '';
+        captionLinesEl.style.opacity = '1';
+      }, IDLE_FADE_MS);
+    } else if(!idleScrolled && elapsed >= IDLE_SCROLL_MS){
+      idleScrolled = true;
+      if(committedLines.length > 0){
+        committedLines.shift();
+        renderLines();
+      }
+    }
   }, 500);
 }
 function stopIdleWatcher(){
   if(idleCheckTimer){ clearInterval(idleCheckTimer); idleCheckTimer = null; }
-  boxText.style.opacity = '1';
+  captionLinesEl.style.opacity = '1';
 }
 
 function connectWSS(){
@@ -432,12 +484,23 @@ function connectWSS(){
 }
 function handlePhrase(msg){
   const id = msg.phraseId;
-  if(phraseState.finalizedIds.has(id)) return;
-  phraseState.latestText[id] = msg.translatedText;
-  phraseState.activeId = id;
-  if(msg.isFinal) phraseState.finalizedIds.add(id);
+  if(finalizedIds.has(id)) return;
   lastPhraseTime = Date.now();
-  renderCaptionText(phraseState.latestText[id] || '');
+  idleScrolled = false;
+  idleCleared = false;
+  captionLinesEl.style.opacity = '1';
+
+  if(id !== currentPhraseId){
+    if(currentPhraseId !== null && currentText){
+      committedLines.push(currentText);
+      const maxHistory = Math.max(0, state.style.lines - 1);
+      while(committedLines.length > maxHistory) committedLines.shift();
+    }
+    currentPhraseId = id;
+  }
+  currentText = msg.translatedText;
+  if(msg.isFinal) finalizedIds.add(id);
+  renderLines();
 }
 function disconnectWSS(){
   stopIdleWatcher();
@@ -446,7 +509,10 @@ function disconnectWSS(){
     try{ ws.close(); }catch(e){}
     ws = null;
   }
-  phraseState = { latestText:{}, finalizedIds:new Set(), activeId:null };
+  committedLines = [];
+  currentPhraseId = null;
+  currentText = '';
+  finalizedIds = new Set();
 }
 
 // ── POPUP PRESENT WINDOW ──
@@ -510,6 +576,7 @@ languageSelect.addEventListener('change', ()=>{ state.session.languageCode = lan
 bgColorInput.addEventListener('input', ()=>{ state.style.bgColor = bgColorInput.value; applyBoxStyle(); saveSettings(); });
 fontColorInput.addEventListener('input', ()=>{ state.style.fontColor = fontColorInput.value; applyBoxStyle(); saveSettings(); });
 fontSizeInput.addEventListener('input', ()=>{ state.style.fontSize = parseInt(fontSizeInput.value,10)||32; applyBoxStyle(); saveSettings(); });
+linesInput.addEventListener('input', ()=>{ state.style.lines = clamp(parseInt(linesInput.value,10)||2, 1, 4); saveSettings(); });
 opacityInput.addEventListener('input', ()=>{
   state.style.bgOpacity = parseInt(opacityInput.value,10);
   opacityVal.textContent = state.style.bgOpacity + '%';
@@ -534,6 +601,7 @@ if(isPresentWindow){
   bgColorInput.value = state.style.bgColor;
   fontColorInput.value = state.style.fontColor;
   fontSizeInput.value = state.style.fontSize;
+  linesInput.value = state.style.lines;
   opacityInput.value = state.style.bgOpacity;
   opacityVal.textContent = state.style.bgOpacity + '%';
   applyBoxGeometry();
